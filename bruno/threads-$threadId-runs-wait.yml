@@ -1,0 +1,29 @@
+info:
+  name: threads/$threadId/runs/wait
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: http://localhost:8123/threads/1b1f26e1-4036-4c80-9a05-692c4bc22e70/runs/wait
+  body:
+    type: json
+    data: |-
+      {
+        "assistant_id": "agent",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "What is LangGraph in one sentence?"
+            }
+          ]
+        }
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

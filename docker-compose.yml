@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: langgraph_user
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: langgraph_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command: ["postgres", "-c", "shared_preload_libraries=vector"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langgraph_user -d langgraph_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Required for streaming and background tasks in LangGraph Server
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 1s
+      retries: 5
+
+volumes:
+  pgdata:
+    driver: local
