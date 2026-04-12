@@ -5,7 +5,7 @@ info:
 
 http:
   method: POST
-  url: http://localhost:8123/assistants/search
+  url: http://localhost:2024/assistants/search
   body:
     type: json
     data: "{}"

@@ -27,6 +27,15 @@ services:
       timeout: 1s
       retries: 5
 
+  # Redis management UI (like DBeaver for Postgres)
+  redis-insight:
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
     driver: local

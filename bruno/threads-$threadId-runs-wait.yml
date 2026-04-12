@@ -5,7 +5,7 @@ info:
 
 http:
   method: POST
-  url: http://localhost:8123/threads/1b1f26e1-4036-4c80-9a05-692c4bc22e70/runs/wait
+  url: http://localhost:2024/threads/1b1f26e1-4036-4c80-9a05-692c4bc22e70/runs/wait
   body:
     type: json
     data: |-

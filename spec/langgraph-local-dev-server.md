@@ -6,25 +6,42 @@ Move from `langgraph dev` (in-memory, ephemeral state) to `langgraph up` (full L
 
 Two approaches are documented:
 - **Approach A (Managed):** `langgraph up` manages all containers — simplest path
-- **Approach B (Manual Infra):** You control Postgres/Redis via `docker-compose.yml`, `langgraph up` connects to them
+- **Approach B (Your Infra):** `langgraph up -d docker-compose.yml` merges your Postgres, RedisInsight into the same project, with `--postgres-uri` pointing to your Postgres and `--watch` for auto-restart on code changes
+
+> **Note:** `langgraph dev` is always in-memory and cannot connect to external Postgres or Redis. Both approaches use `langgraph up`.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                 langgraph up                     │
+Approach A (Managed — all by langgraph up):
+┌──────────────────────────────────────────────────┐
+│                  langgraph up                    |
 │                                                  │
-│  ┌──────────────┐  ┌──────────┐  ┌───────────┐  │
-│  │ LangGraph    │  │ Postgres │  │   Redis   │  │
-│  │ API Server   │──│ (pgvec)  │  │           │  │
-│  │ :8123        │  │ :5433    │  │ (internal)│  │
-│  └──────────────┘  └──────────┘  └───────────┘  │
-│        │                │                        │
-│   Full Platform    Checkpoints &                 │
-│   REST API         State Persistence             │
-└─────────────────────────────────────────────────┘
+│  ┌──────────────┐  ┌───────────┐  ┌───────────┐  │
+│  │ LangGraph    │  │ Postgres  │  │   Redis   │  │
+│  │ API Server   │──│ (pgvec)   │  │ (managed) │  │
+│  │ :8123        │  │ :5433     │  │           │  │
+│  └──────────────┘  └───────────┘  └───────────┘  │
+└──────────────────────────────────────────────────┘
+
+Approach B (Your Infra — langgraph up -d docker-compose.yml):
+┌──────────────────────────────────────────────────────────────-┐
+│              langgraph up -d docker-compose.yml               │
+│                                                               │
+│  Managed by CLI:              Merged from docker-compose.yml: │
+│  ┌──────────────┐             ┌───────────────┐               │
+│  │ LangGraph    │──────────── │ Postgres      │               │
+│  │ API Server   │  (--uri)    │ (pgvector)    │               │
+│  │ :8123        │             │ :5432         │               │
+│  └──────┬───────┘             └───────────────┘               │
+│         │                     ┌───────────────┐               │
+│  ┌──────┴───────┐             │ RedisInsight  │               │
+│  │ Redis        │◄────────────│ :5540         │               │
+│  │ (managed)    │  (inspect)  └───────────────┘               │
+│  └──────────────┘                                             │
+└─────────────────────────────────────────────────────────────-─┘
 ```
 
 **Components:**
@@ -46,12 +63,14 @@ Two approaches are documented:
 
 ## Files Modified
 
-| File                 | Change                                                                  |
-| -------------------- | ----------------------------------------------------------------------- |
-| `src/agent/graph.py` | Replaced stub with real LLM call using `ChatOpenAI` + `MessagesState`   |
-| `pyproject.toml`     | Added `langchain-openai>=0.3.0` dependency                              |
-| `langgraph.json`     | Added `python_version: "3.12"`                                          |
-| `docker-compose.yml` | Updated for Approach B: pgvector image, named volume, Redis healthcheck |
+| File                 | Change                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `src/agent/graph.py` | Replaced stub with real LLM call using `ChatOpenAI` + `MessagesState`                 |
+| `pyproject.toml`     | Added `langchain-openai>=0.3.0` dependency                                            |
+| `langgraph.json`     | Added `python_version: "3.12"`                                                        |
+| `docker-compose.yml` | Updated for Approach B: pgvector image, named volume, Redis healthcheck, RedisInsight |
+| `.env`               | API keys for OpenAI (OpenRouter) and LangSmith                                        |
+| `.env.example`       | Template showing expected env vars                                                    |
 
 ---
 
@@ -130,9 +149,13 @@ Press `Ctrl+C` in the terminal.
 
 ---
 
-### Approach B — Manual Infrastructure
+### Approach B — `langgraph up` with Your Own Docker Infrastructure
 
-You control Postgres/Redis via your own `docker-compose.yml`. The LangGraph server connects to your external Postgres.
+You control Postgres via your own `docker-compose.yml`. The `-d` flag merges your services into the same Docker network as the LangGraph server, so they can communicate by service name.
+
+**Key difference from Approach A:** You own the Postgres container (custom credentials, pgvector image, named volume). The `--watch` flag gives a dev-like experience with auto-restart on code changes.
+
+> **Important:** `langgraph dev` is always in-memory — it has no flags for external Postgres or Redis. To use persistent storage, you must use `langgraph up`.
 
 **1. Install dependencies**
 
@@ -140,44 +163,36 @@ You control Postgres/Redis via your own `docker-compose.yml`. The LangGraph serv
 uv sync
 ```
 
-**2. Start Postgres**
+**2. Start everything with one command**
 
 ```bash
-docker compose up -d postgres
+langgraph up \
+  -d docker-compose.yml \
+  --postgres-uri "postgres://langgraph_user:secure_password@postgres:5432/langgraph_db?sslmode=disable" \
+  --watch
 ```
 
-Wait for healthy status:
+This does the following:
+- **Builds** a Docker image from your project using `langgraph.json`
+- **Merges** your `docker-compose.yml` services (Postgres, Redis, RedisInsight) into the same Docker Compose project
+- **Starts** the LangGraph API server on `http://localhost:8123`
+- **Connects** to your Postgres via `--postgres-uri` (using `postgres` as hostname — the Docker service name)
+- **Creates** a managed Redis (`langgraph-redis`) for streaming/background tasks
+- **Watches** for code changes and auto-restarts the server (`--watch`)
 
-```bash
-docker compose ps
-# postgres should show "healthy"
-```
+**What about Redis?** `langgraph up` always creates its own managed Redis (`langgraph-redis`). There is no `--redis-uri` flag. Your `redis` service from docker-compose.yml also starts but is **not used by the server**. RedisInsight should connect to `langgraph-redis` (see the RedisInsight section below).
 
-**3. Start the LangGraph server with external Postgres**
+**3. Stop everything**
 
-```bash
-langgraph up --postgres-uri "postgres://langgraph_user:secure_password@host.docker.internal:5432/langgraph_db?sslmode=disable"
-```
+Press `Ctrl+C` in the terminal. All containers (server, Postgres, Redis, RedisInsight) stop together since they're in the same Compose project.
 
-**Networking note:** `host.docker.internal` resolves to the host machine from inside Docker containers on macOS Docker Desktop. The `langgraph up` container can reach your Postgres container through the host's port 5432.
-
-**Redis note:** The CLI has `--postgres-uri` but no `--redis-uri` flag. When you provide `--postgres-uri`, it skips creating a managed Postgres but **still creates a managed Redis**. You don't need to start your own Redis container.
-
-**4. Stop everything**
-
-```bash
-# Stop the LangGraph server
-# Ctrl+C in the langgraph up terminal
-
-# Stop Postgres
-docker compose down
-```
+> **Note:** Postgres data is stored in the `pgdata` named volume and survives restarts. Use `docker compose down -v` only if you want to wipe all data.
 
 ---
 
 ## Verification
 
-After either approach, the server is at `http://localhost:8123`.
+After starting the server, it is available at `http://localhost:8123` for both approaches.
 
 ### 1. Health check
 
@@ -234,7 +249,8 @@ Expected: Returns the full conversation (user message + AI response).
 
 ```bash
 # Stop the server (Ctrl+C), then restart:
-langgraph up
+langgraph up                                        # Approach A
+langgraph up -d docker-compose.yml --postgres-uri "postgres://langgraph_user:secure_password@postgres:5432/langgraph_db?sslmode=disable" --watch  # Approach B
 
 # Retrieve the same thread:
 curl -s "http://localhost:8123/threads/${THREAD_ID}/state" | python3 -m json.tool
@@ -322,14 +338,14 @@ You can inspect checkpoints, thread state, and other LangGraph tables directly i
 
 The managed Postgres is exposed on **port 5433** (not 5432).
 
-| Field              | Value              |
-| ------------------ | ------------------ |
-| Host               | `localhost`        |
-| Port               | `5433`             |
-| Database           | `postgres`         |
-| Username           | `postgres`         |
-| Password           | `postgres`         |
-| SSL                | Disabled           |
+| Field    | Value       |
+| -------- | ----------- |
+| Host     | `localhost` |
+| Port     | `5433`      |
+| Database | `postgres`  |
+| Username | `postgres`  |
+| Password | `postgres`  |
+| SSL      | Disabled    |
 
 JDBC URL: `jdbc:postgresql://localhost:5433/postgres`
 
@@ -337,14 +353,14 @@ JDBC URL: `jdbc:postgresql://localhost:5433/postgres`
 
 Your Postgres is exposed on **port 5432** with custom credentials.
 
-| Field              | Value              |
-| ------------------ | ------------------ |
-| Host               | `localhost`        |
-| Port               | `5432`             |
-| Database           | `langgraph_db`     |
-| Username           | `langgraph_user`   |
-| Password           | `secure_password`  |
-| SSL                | Disabled           |
+| Field    | Value             |
+| -------- | ----------------- |
+| Host     | `localhost`       |
+| Port     | `5432`            |
+| Database | `langgraph_db`    |
+| Username | `langgraph_user`  |
+| Password | `secure_password` |
+| SSL      | Disabled          |
 
 JDBC URL: `jdbc:postgresql://localhost:5432/langgraph_db`
 
@@ -360,11 +376,11 @@ JDBC URL: `jdbc:postgresql://localhost:5432/langgraph_db`
 
 Once connected, look for these LangGraph tables:
 
-| Table                    | Contents                                                  |
-| ------------------------ | --------------------------------------------------------- |
-| `checkpoints`            | Graph execution checkpoints (state at each step)          |
-| `checkpoint_writes`      | Individual write operations within checkpoints            |
-| `checkpoint_blobs`       | Serialized state blobs                                    |
+| Table               | Contents                                         |
+| ------------------- | ------------------------------------------------ |
+| `checkpoints`       | Graph execution checkpoints (state at each step) |
+| `checkpoint_writes` | Individual write operations within checkpoints   |
+| `checkpoint_blobs`  | Serialized state blobs                           |
 
 You can query thread state directly, e.g.:
 
@@ -374,3 +390,46 @@ SELECT DISTINCT thread_id, created_at
 FROM checkpoints
 ORDER BY created_at DESC;
 ```
+
+---
+
+## Connecting to Redis with RedisInsight
+
+RedisInsight is a GUI for Redis — browse keys, monitor commands, inspect data structures, and run queries. It runs as a container alongside Redis in `docker-compose.yml`.
+
+### Access
+
+Once `docker compose up -d` is running, open: **http://localhost:5540**
+
+### First-time Setup
+
+1. Open `http://localhost:5540` in your browser
+2. Click **Add Redis database**
+3. Enter the connection details:
+
+| Field    | Value                   |
+| -------- | ----------------------- |
+| Host     | `langgraph-redis`       |
+| Port     | `6379`                  |
+| Name     | `LangGraph Redis` (any) |
+| Username | _(leave empty)_         |
+| Password | _(leave empty)_         |
+
+> **Important:** Use `langgraph-redis` as the host — this is the managed Redis that the LangGraph server actually writes to. Your `docker-compose.yml` also defines a `redis` service, but the server does not use it. RedisInsight runs inside Docker on the same compose network, so it can reach `langgraph-redis` by service name.
+
+4. Click **Add Redis Database**
+
+### What to Look For
+
+LangGraph uses Redis for streaming and background task management. In RedisInsight you can:
+
+- **Browser** — Browse all keys stored by the LangGraph server (stream channels, task queues)
+- **CLI** — Run Redis commands directly (e.g., `KEYS *` to list all keys)
+- **Profiler** — Monitor real-time Redis commands as the LangGraph server processes requests
+
+### Availability by Approach
+
+| Approach                             | RedisInsight available? | Redis host to connect to                                        |
+| ------------------------------------ | ----------------------- | --------------------------------------------------------------- |
+| **A** (Managed, standalone)          | No                      | N/A — RedisInsight not running                                  |
+| **B** (with `-d docker-compose.yml`) | Yes                     | `langgraph-redis` (the managed Redis, not your `redis` service) |
